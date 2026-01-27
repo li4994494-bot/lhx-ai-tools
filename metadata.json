@@ -1,0 +1,7 @@
+{
+  "name": "lhx个人网站 - AI工具",
+  "description": "一个高级、简洁、iOS 风格的 AI 工具个人网页，展示 lhx 的 AI 项目与工具。",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
