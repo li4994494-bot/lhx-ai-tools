@@ -28,28 +28,18 @@ interface LingoMemoProps {
   onShowToast: (msg: string) => void;
 }
 
-// ⚡️ Revised Prompt: Strictly enforces the User's requested Chinese Headers
+// ⚡️ Ultra-Optimized Prompt for Speed
+// Reduced token count while maintaining strict formatting requirements.
 const SYSTEM_PROMPT = `
-Task: Translate & Explain. Return JSON.
+Role: Fast Translator (CN<->EN). Return JSON.
 
 Logic:
-1. If Input is Chinese -> Translate to English.
-2. If Input is English -> Translate to Chinese.
+- Input CN -> Target EN
+- Input EN -> Target CN
 
-Mandatory Output Format for "translated" string (Markdown):
-
-**简洁常用版（推荐）**
-[The most direct and natural translation]
-
-**地道英文**
-[Alternative native expression (or Native Chinese if target is Chinese)]
-
-**关键说明**
-[Key grammar, vocabulary points, or nuances]
-
-Output JSON format:
+Output Schema:
 {
-  "translated": "String containing the Headers above",
+  "translated": "Markdown string using these headers:\n\n**简洁常用版（推荐）**\n...\n\n**地道英文**\n...\n\n**关键说明**\n...",
   "expansions": ["keyword1", "keyword2"]
 }
 `;
@@ -210,17 +200,34 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
   };
   
   const handleAIAnalysis = async (text: string) => {
+    // 1. Debug Key Presence
+    const apiKey = process.env.API_KEY;
+    console.log("[LingoMemo] Checking API Key...");
+    
+    if (!apiKey) {
+      onShowToast("错误: 未检测到 API Key，请检查 Vercel 环境变量并重新部署");
+      return;
+    }
+
+    // 2. Validate Key Format
+    if (!apiKey.startsWith("AIza")) {
+      console.warn("[LingoMemo] Invalid API Key format detected");
+      onShowToast("配置错误: API Key 格式不正确 (应以 AIza 开头)");
+      return;
+    }
+
     setIsLoading(true);
     setCurrentLog(null);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+      const ai = new GoogleGenAI({ apiKey: apiKey });
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents: text,
         config: {
           systemInstruction: SYSTEM_PROMPT,
           responseMimeType: "application/json",
+          temperature: 0.1, // ⚡️ Lower temperature for faster, deterministic token selection
         },
       });
 
@@ -238,9 +245,25 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
       setCurrentLog(newLog);
       setLogs(prev => [newLog, ...prev]);
 
-    } catch (error) {
-      console.error(error);
-      onShowToast("AI 服务繁忙，请重试");
+    } catch (error: any) {
+      console.error("[LingoMemo] AI Error:", error);
+      
+      // 3. Detailed Error Reporting
+      let errorMessage = "AI 服务繁忙";
+      
+      if (error.message) {
+        if (error.message.includes("fetch")) {
+          errorMessage = "网络连接失败：无法连接到 Google (请检查 VPN)";
+        } else if (error.message.includes("403") || error.message.includes("API key")) {
+          errorMessage = "权限拒绝：API Key 无效或过期";
+        } else if (error.message.includes("429")) {
+          errorMessage = "请求过于频繁，请稍后再试";
+        } else {
+          errorMessage = `请求失败: ${error.message.substring(0, 20)}...`;
+        }
+      }
+
+      onShowToast(errorMessage);
     } finally {
       setIsLoading(false);
       setInputText('');
