@@ -10,11 +10,12 @@ import {
   Volume2, 
   Sparkles, 
   Bookmark,
+  Repeat,
   Check,
-  RotateCcw,
-  Repeat
+  RotateCcw
 } from 'lucide-react';
-import { GoogleGenAI } from "@google/genai";
+// ❌ 移除 Google SDK 引用
+// import { GoogleGenAI } from "@google/genai"; 
 import { LingoLog, ReviewItem } from '../types';
 
 /* --- Type Definitions for Web Speech API --- */
@@ -28,23 +29,34 @@ interface LingoMemoProps {
   onShowToast: (msg: string) => void;
 }
 
-// ⚡️ Ultra-Optimized Prompt for Speed
-// Reduced token count while maintaining strict formatting requirements.
+// 保持 Prompt 不变，Cohere 的 Command R+ 模型能很好地理解它
 const SYSTEM_PROMPT = `
-Role: Fast Translator (CN<->EN). Return JSON.
+Role: Expert Translator & Language Coach (CN <-> EN).
+Task: 
+1. DETECT INPUT LANGUAGE.
+2. IF CHINESE: Translate to English. Correct ASR errors (e.g. "绷直脚本" -> "绷直脚背").
+3. IF ENGLISH: Translate to Chinese. Provide refined English alternatives if the input is unnatural.
 
-Logic:
-- Input CN -> Target EN
-- Input EN -> Target CN
+STRICT OUTPUT FORMAT (JSON):
+You must output a single JSON object. The "translated" field must use the EXACT Markdown headers below based on the detected language.
 
-Output Schema:
+--- SCENARIO A: Input is CHINESE ---
 {
-  "translated": "Markdown string using these headers:\n\n**简洁常用版（推荐）**\n...\n\n**地道英文**\n...\n\n**关键说明**\n...",
+  "translated": "**更简洁、常用版（推荐）**\\n[English Sentence]\\n\\n**地道英文（[Context]）**\\n[Native Expression]\\n\\n**关键说明**\\n[ASR corrections, Vocabulary]",
   "expansions": ["keyword1", "keyword2"]
 }
+
+--- SCENARIO B: Input is ENGLISH ---
+{
+  "translated": "**中文翻译（常用版）**\\n[Natural Chinese Translation]\\n\\n**更地道/自然的表达（优化）**\\n[Refined English or 'Already Natural']\\n\\n**关键说明**\\n[Grammar points, Nuances]",
+  "expansions": ["keyword1", "keyword2"]
+}
+
+CRITICAL:
+- For English input, the first header MUST contain "常用版" so the frontend can display it correctly.
+- Do not add extra text outside the JSON. Return JSON only.
 `;
 
-/* --- Fuzzy Matching Helpers --- */
 const levenshteinDistance = (a: string, b: string): number => {
   const matrix = [];
   for (let i = 0; i <= b.length; i++) matrix[i] = [i];
@@ -83,23 +95,24 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
   const [isListening, setIsListening] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   
-  // Data State
   const [currentLog, setCurrentLog] = useState<LingoLog | null>(null);
   const [logs, setLogs] = useState<LingoLog[]>([]);
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
   
-  // Direct Edit State
   const [cardOriginalText, setCardOriginalText] = useState('');
   
-  // Review Session State
   const [sessionQueue, setSessionQueue] = useState<ReviewItem[]>([]);
   const [currentCardIndex, setCurrentCardIndex] = useState(0);
   const [isFlipped, setIsFlipped] = useState(false);
 
-  // Audio Ref
   const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
+    // 检查 Key 是否注入成功
+    if (!process.env.API_KEY || process.env.API_KEY.length < 5) {
+      console.error("[LingoMemo] ⚠️ API Key missing. Check vite.config.ts");
+    }
+
     const savedLogs = localStorage.getItem('lingo_logs');
     const savedReviews = localStorage.getItem('lingo_reviews');
     if (savedLogs) setLogs(JSON.parse(savedLogs));
@@ -117,16 +130,15 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
     localStorage.setItem('lingo_reviews', JSON.stringify(reviews));
   }, [logs, reviews]);
 
-  /* --- Logic: Speech (Optimized for Real-time Display) --- */
   const startListening = () => {
     if (!('webkitSpeechRecognition' in window)) {
       onShowToast("您的浏览器不支持语音识别");
       return;
     }
     const recognition = new window.webkitSpeechRecognition();
-    recognition.continuous = false; // Stop after one sentence for faster interaction
-    recognition.interimResults = true; // ⚡️ Enable real-time typing effect
-    recognition.lang = 'zh-CN'; // Default
+    recognition.continuous = false; 
+    recognition.interimResults = true; 
+    recognition.lang = 'zh-CN'; 
 
     recognition.onstart = () => setIsListening(true);
     recognition.onend = () => setIsListening(false);
@@ -143,12 +155,11 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
         }
       }
 
-      // ⚡️ Sync input immediately for "typing" effect
       if (finalTranscript) {
         const cleanFinal = finalTranscript.trim();
         setInputText(cleanFinal);
         if (cleanFinal) {
-           handleInputAnalysis(cleanFinal); // Trigger EXACTLY the same logic as text input
+           handleInputAnalysis(cleanFinal); 
         }
       } else {
         setInputText(interimTranscript);
@@ -165,13 +176,11 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
     }
   };
 
-  /* --- Logic: AI & Deduplication --- */
   const handleInputAnalysis = async (text: string) => {
     if (!text.trim()) return;
     
     const normalizedInput = normalizeText(text);
 
-    // Skip deduplication check if it's extremely short to avoid false positives
     if (normalizedInput.length > 2) {
         const existingLogIndex = logs.findIndex(l => {
         const normalizedLog = normalizeText(l.original);
@@ -200,19 +209,9 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
   };
   
   const handleAIAnalysis = async (text: string) => {
-    // 1. Debug Key Presence
-    const apiKey = process.env.API_KEY;
-    console.log("[LingoMemo] Checking API Key...");
-    
-    if (!apiKey) {
-      onShowToast("错误: 未检测到 API Key，请检查 Vercel 环境变量并重新部署");
-      return;
-    }
-
-    // 2. Validate Key Format
-    if (!apiKey.startsWith("AIza")) {
-      console.warn("[LingoMemo] Invalid API Key format detected");
-      onShowToast("配置错误: API Key 格式不正确 (应以 AIza 开头)");
+    // 检查 API Key
+    if (!process.env.API_KEY || process.env.API_KEY.length < 5) {
+      onShowToast("⚠️ 未配置 API Key，无法连接 AI");
       return;
     }
 
@@ -220,23 +219,49 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
     setCurrentLog(null);
 
     try {
-      const ai = new GoogleGenAI({ apiKey: apiKey });
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
-        contents: text,
-        config: {
-          systemInstruction: SYSTEM_PROMPT,
-          responseMimeType: "application/json",
-          temperature: 0.1, // ⚡️ Lower temperature for faster, deterministic token selection
+      // ✅ 核心修改：使用 fetch 调用 Cohere API
+      const response = await fetch('https://api.cohere.com/v1/chat', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.API_KEY}`, // 使用 Vite 注入的 Key
+          'Content-Type': 'application/json',
+          'X-Client-Name': 'lhx-portfolio-app'
         },
+        body: JSON.stringify({
+          message: text,
+          preamble: SYSTEM_PROMPT,
+          model: "command-r-plus", // Cohere 的强力模型
+          temperature: 0.1,
+          stream: false
+        })
       });
 
-      const result = JSON.parse(response.text || '{}');
+      if (!response.ok) {
+        const errData = await response.json();
+        throw new Error(errData.message || `Cohere API Error: ${response.status}`);
+      }
+
+      const data = await response.json();
+      let jsonStr = data.text || '{}'; // Cohere 返回的内容在 text 字段中
+
+      // --- JSON 清洗逻辑 (保持不变以确保健Ys性) ---
+      jsonStr = jsonStr.replace(/```json/g, '').replace(/```/g, '');
+      const firstBrace = jsonStr.indexOf('{');
+      const lastBrace = jsonStr.lastIndexOf('}');
+      
+      if (firstBrace !== -1 && lastBrace !== -1) {
+        jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);
+      } else {
+        console.warn("Raw AI output:", jsonStr);
+        throw new Error("Invalid JSON structure received");
+      }
+
+      const result = JSON.parse(jsonStr);
       
       const newLog: LingoLog = {
         id: Date.now().toString(),
         original: text,
-        translated: result.translated || "翻译失败，请重试",
+        translated: result.translated || "翻译失败",
         expansions: result.expansions || [],
         timestamp: Date.now(),
         count: 1
@@ -247,22 +272,16 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
 
     } catch (error: any) {
       console.error("[LingoMemo] AI Error:", error);
-      
-      // 3. Detailed Error Reporting
       let errorMessage = "AI 服务繁忙";
-      
       if (error.message) {
-        if (error.message.includes("fetch")) {
-          errorMessage = "网络连接失败：无法连接到 Google (请检查 VPN)";
-        } else if (error.message.includes("403") || error.message.includes("API key")) {
-          errorMessage = "权限拒绝：API Key 无效或过期";
-        } else if (error.message.includes("429")) {
-          errorMessage = "请求过于频繁，请稍后再试";
-        } else {
-          errorMessage = `请求失败: ${error.message.substring(0, 20)}...`;
+        if (error.message.includes("fetch") || error.message.includes("Network")) {
+          errorMessage = "网络错误";
+        } else if (error.message.includes("401") || error.message.includes("403")) {
+          errorMessage = "Key 无效或过期";
+        } else if (error.message.includes("JSON")) {
+          errorMessage = "解析结果失败";
         }
       }
-
       onShowToast(errorMessage);
     } finally {
       setIsLoading(false);
@@ -270,7 +289,6 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
     }
   };
 
-  /* --- Logic: Direct Edit on Card --- */
   const handleCardTextChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     setCardOriginalText(e.target.value);
   };
@@ -293,16 +311,13 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
     }
   };
 
-  /* --- Logic: TTS --- */
   const speakText = (text: string) => {
     const utterance = new SpeechSynthesisUtterance(text);
-    // Simple heuristic: if text contains Chinese characters, use zh-CN, else en-US
     const isChinese = /[\u4e00-\u9fa5]/.test(text);
     utterance.lang = isChinese ? 'zh-CN' : 'en-US';
     window.speechSynthesis.speak(utterance);
   };
 
-  /* --- Logic: SRS / Collection --- */
   const toggleCollection = (log: LingoLog) => {
     const existing = reviews.find(r => r.logId === log.id);
     if (existing) {
@@ -370,32 +385,27 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
 
   const isBookmarked = (id: string) => reviews.some(r => r.logId === id);
 
-  /* --- Render Helpers --- */
-  // Strictly extracts the first section of text (Concise) for the Blue Card
   const getConciseContent = (text: string) => {
     const lines = text.split('\n');
     let content = [];
     let capture = false;
-    let headerCount = 0;
-
+    
     for (const line of lines) {
-        const t = line.trim();
-        // Start capturing at "Concise" or first header
-        if (t.startsWith('**')) {
-            headerCount++;
-            if (headerCount > 1) break; // Stop as soon as we hit the second header
-            capture = true; 
-            continue;
-        }
-        if (capture && t) {
-            content.push(t);
-        }
+      const t = line.trim();
+      if (t.includes('常用版') || t.includes('Recommended')) {
+        capture = true;
+        continue;
+      }
+      if (t.startsWith('**') && capture) {
+        break; // Stop at next header
+      }
+      if (capture && t) {
+        content.push(t);
+      }
     }
     
-    // Fallback: if no headers found, return everything
     if (content.length === 0) {
-        const firstPara = text.split('\n').find(l => l.trim().length > 0 && !l.trim().startsWith('**'));
-        return firstPara || text;
+      return text.split('\n')[0] || text;
     }
     return content.join(' ');
   };
@@ -408,7 +418,7 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
       if (trimmed.startsWith('**')) {
         const title = trimmed.replace(/\*\*/g, '').replace(':', '');
         return (
-          <div key={i} className="mt-4 first:mt-0 mb-2 flex items-center gap-2">
+          <div key={i} className="mt-5 first:mt-0 mb-2 flex items-center gap-2">
             <div className="w-1 h-4 bg-indigo-500 rounded-full" />
             <h4 className="text-indigo-900 font-bold text-sm tracking-wide">{title}</h4>
           </div>
