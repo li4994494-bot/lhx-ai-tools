@@ -10,12 +10,11 @@ import {
   Volume2, 
   Sparkles, 
   Bookmark,
-  Repeat,
   Check,
-  RotateCcw
+  RotateCcw,
+  Repeat
 } from 'lucide-react';
-// ❌ 移除 Google SDK 引用
-// import { GoogleGenAI } from "@google/genai"; 
+// import { GoogleGenAI } from "@google/genai"; // ❌ Removed Google SDK
 import { LingoLog, ReviewItem } from '../types';
 
 /* --- Type Definitions for Web Speech API --- */
@@ -29,7 +28,6 @@ interface LingoMemoProps {
   onShowToast: (msg: string) => void;
 }
 
-// 保持 Prompt 不变，Cohere 的 Command R+ 模型能很好地理解它
 const SYSTEM_PROMPT = `
 Role: Expert Translator & Language Coach (CN <-> EN).
 Task: 
@@ -108,9 +106,12 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
   const recognitionRef = useRef<any>(null);
 
   useEffect(() => {
-    // 检查 Key 是否注入成功
-    if (!process.env.API_KEY || process.env.API_KEY.length < 5) {
-      console.error("[LingoMemo] ⚠️ API Key missing. Check vite.config.ts");
+    // 调试：检查 Key 状态
+    const key = process.env.API_KEY;
+    if (!key || key.length < 5) {
+      console.warn("[LingoMemo] API Key appears missing or short. Check Vite config.");
+    } else {
+      console.log("[LingoMemo] Ready with API Key.");
     }
 
     const savedLogs = localStorage.getItem('lingo_logs');
@@ -209,9 +210,10 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
   };
   
   const handleAIAnalysis = async (text: string) => {
-    // 检查 API Key
-    if (!process.env.API_KEY || process.env.API_KEY.length < 5) {
-      onShowToast("⚠️ 未配置 API Key，无法连接 AI");
+    // 1. 检查环境变量中的 Key
+    const apiKey = process.env.API_KEY;
+    if (!apiKey || apiKey.length < 5) {
+      onShowToast("错误: 未配置 API Key (Vercel)");
       return;
     }
 
@@ -219,32 +221,33 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
     setCurrentLog(null);
 
     try {
-      // ✅ 核心修改：使用 fetch 调用 Cohere API
+      // ✅ 2. 切换为 Cohere API 调用 (fetch)
       const response = await fetch('https://api.cohere.com/v1/chat', {
         method: 'POST',
         headers: {
-          'Authorization': `Bearer ${process.env.API_KEY}`, // 使用 Vite 注入的 Key
+          'Authorization': `Bearer ${apiKey}`,
           'Content-Type': 'application/json',
-          'X-Client-Name': 'lhx-portfolio-app'
+          'X-Client-Name': 'lhx-portfolio'
         },
         body: JSON.stringify({
+          model: 'command-r-plus', // 或 'command-r'
           message: text,
           preamble: SYSTEM_PROMPT,
-          model: "command-r-plus", // Cohere 的强力模型
           temperature: 0.1,
           stream: false
         })
       });
 
       if (!response.ok) {
-        const errData = await response.json();
-        throw new Error(errData.message || `Cohere API Error: ${response.status}`);
+        const errorData = await response.json();
+        throw new Error(errorData.message || `Cohere API Error: ${response.status}`);
       }
 
       const data = await response.json();
-      let jsonStr = data.text || '{}'; // Cohere 返回的内容在 text 字段中
+      // Cohere 的返回内容在 data.text 字段
+      let jsonStr = data.text || '{}';
 
-      // --- JSON 清洗逻辑 (保持不变以确保健Ys性) ---
+      // 3. 增强的 JSON 提取逻辑
       jsonStr = jsonStr.replace(/```json/g, '').replace(/```/g, '');
       const firstBrace = jsonStr.indexOf('{');
       const lastBrace = jsonStr.lastIndexOf('}');
@@ -252,8 +255,8 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
       if (firstBrace !== -1 && lastBrace !== -1) {
         jsonStr = jsonStr.substring(firstBrace, lastBrace + 1);
       } else {
-        console.warn("Raw AI output:", jsonStr);
-        throw new Error("Invalid JSON structure received");
+        console.warn("Cohere Raw Output:", data.text);
+        throw new Error("Invalid JSON structure received from AI");
       }
 
       const result = JSON.parse(jsonStr);
@@ -261,7 +264,7 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
       const newLog: LingoLog = {
         id: Date.now().toString(),
         original: text,
-        translated: result.translated || "翻译失败",
+        translated: result.translated || "翻译结果解析异常",
         expansions: result.expansions || [],
         timestamp: Date.now(),
         count: 1
@@ -275,11 +278,11 @@ const LingoMemo: React.FC<LingoMemoProps> = ({ onBack, onShowToast }) => {
       let errorMessage = "AI 服务繁忙";
       if (error.message) {
         if (error.message.includes("fetch") || error.message.includes("Network")) {
-          errorMessage = "网络错误";
-        } else if (error.message.includes("401") || error.message.includes("403")) {
-          errorMessage = "Key 无效或过期";
+          errorMessage = "网络连接失败";
+        } else if (error.message.includes("401") || error.message.includes("invalid api key")) {
+          errorMessage = "Cohere Key 无效";
         } else if (error.message.includes("JSON")) {
-          errorMessage = "解析结果失败";
+          errorMessage = "结果解析失败";
         }
       }
       onShowToast(errorMessage);
